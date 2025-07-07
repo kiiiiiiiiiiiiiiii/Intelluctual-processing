@@ -94,6 +94,11 @@ def time2epoch(time_str):
     dt_obj = datetime.datetime.strptime(time_str, "%Y/%m/%d %H:%M:%S")
     return int(dt_obj.timestamp())
 
+def get_difficulties():
+    """
+    問題の難易度
+    """
+    return get_api("https://kenkoooo.com/atcoder/resources/problem-models.json")
 
 USER_HISTORY_KEY = ("date", "contest_id", "rank", "pafs", "rating", "diff")
 def get_contest_page(user, N=10):
@@ -136,7 +141,7 @@ def get_contest_page(user, N=10):
 
 def get_submissions_merge_contest_info(user):
     """
-    ユーザーの提出物とコンテストIDを紐づけて取得  
+    直近のユーザーの提出物とコンテストIDを紐づけて取得  
     { contest_id: submission[] }
     """
     histories = get_contest_page(user) # 直近のコンテスト履歴を取得
@@ -166,9 +171,10 @@ def get_submissions_merge_contest_info(user):
         ret[history["contest_id"]] = submissions_filter
     return ret
 
-def get_similarity_problems(problem_id, N=5):
+def get_similarity_problems(problem_id, N=5, difficulty=None):
     """
     problem_idの問題に類似度の高い問題をN返す。
+    difficultyを渡すと難易度を考慮して返す。(毎度difficultyを取得すると時間がかかるので引数で渡す。)
     (problem_id, score)[]
     """
     problems_json = get_json("data/problems_editorial.json")
@@ -197,18 +203,57 @@ def get_similarity_problems(problem_id, N=5):
     # for i, score in enumerate(similarities):
     #     print(f"{list(problems_json.keys())[i]} score: {score[0]:.4f}")
 
+    def calc_score(target_id, score):
+        """
+        難易度を考慮してスコアを計算する
+        """
+        try :
+            problem_diff = difficulty[problem_id]["difficulty"]
+            target_diff = difficulty[target_id]["difficulty"]
+            return max(score - (abs(problem_diff - target_diff) / 1000), 0)
+        except:
+            return score
+
     scores = [(list(problems_json.keys())[i], s[0]) for i, s in enumerate(similarities)]
-    scores = sorted(scores, key=lambda x: x[1], reverse=True)
+    scores = sorted(scores, key=lambda x: calc_score(x[0], x[1]), reverse=True)
     return scores[:N]
+
+def get_recomend_problem(user):
+    """
+    不正解だった問題を元におすすめの問題のリストを返す  
+    [  
+        [(id, score), (id, score), ...],  
+        [(id, score), (id, score), ...],  
+        ...  
+    ]  
+    """
+
+    submissions_list = get_submissions_merge_contest_info(user)
+    problems = set()
+    for submissions in submissions_list.values():
+        for submission in submissions:
+            result = submission["result"]
+            if result == "WA" or result == "TLE":
+                problems.add(submission["problem_id"])
+
+    difficulty = get_difficulties()
+    return [get_similarity_problems(p) for p in problems]
+
 
 if __name__ == "__main__":
     if TEST:
         print("テストモードで実行しています。")
-    result = get_submissions_merge_contest_info("kiiiiiii")
-    for id, submissions in result.items():
-        print(id)
-        for submission in submissions:
-            sim_problem = get_similarity_problems(submission["problem_id"])[0][0]
-            print(f"    {submission['epoch_second']}: {submission['problem_id']} - {submission['result']} ({submission['language']}) simproblem: {sim_problem}")
-    # print(get_similarity_problems("abc401_d"))
+
+    recomends = get_recomend_problem("kiiiiiii")
+    for problems in recomends:
+        for problem in problems:
+            print(problem)
+
+    # result = get_submissions_merge_contest_info("kiiiiiii")
+    # for id, submissions in result.items():
+    #     print(id)
+    #     for submission in submissions:
+    #         sim_problem = get_similarity_problems(submission["problem_id"])[0][0]
+    #         print(f"    {submission['epoch_second']}: {submission['problem_id']} - {submission['result']} ({submission['language']}) simproblem: {sim_problem}")
+    # print(get_similarity_problems("abc300_a", difficulty=get_difficulties()))
     pass
