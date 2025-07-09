@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from dotenv import load_dotenv
+from gui import windowShow
+load_dotenv()
 
 TEST = False
 
@@ -22,6 +25,49 @@ def get_api(url, params=None):
         return data
     except requests.exceptions.RequestException as err:
         print(f"Error: {err}")
+
+def use_gemini(text, TEST=False):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
+    headers = {
+        "Content-Type": "applicatoin/json"
+    }
+    text =  """
+            マークダウン記法を使わずに、プレーンテキストで回答してください。
+            箇条書きは使わず、通常の文章で記述してください。
+            コードブロックは含めないでください。
+            太字や斜体などの装飾は不要です。
+            """ + text
+
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    { "text": text }
+                ]
+            }
+        ]
+    }
+
+    try:
+        if TEST:
+            response = get_json("data/gemini.json")
+            result = response
+        else:
+            response = requests.post(url, headers=headers, data=json.dumps(data))
+            response.raise_for_status()
+            result = response.json()
+
+        if "candidates" in result and len(result["candidates"]) > 0:
+            generated_text = result["candidates"][0]["content"]["parts"][0]["text"]
+            return generated_text
+        else:
+            print("テキストを生成できませんでした。")
+            if "promptFeedback" in result:
+                print(f"プロンプトフィードバック: {result['promptFeedback']}")
+    except requests.exceptions.RequestException as e:
+        print(f"APIリクエスト中にエラーが発生しました: {e}")
+    except json.JSONDecodeError:
+        print(f"JSONでコードエラー: {response.text}")
 
 def get_html(url):
     if TEST:
@@ -101,11 +147,11 @@ def get_difficulties():
     return get_api("https://kenkoooo.com/atcoder/resources/problem-models.json")
 
 USER_HISTORY_KEY = ("date", "contest_id", "rank", "pafs", "rating", "diff")
-def get_contest_page(user, N=10):
+def get_histories(user, N=10):
     """
     直近の10コンテストの情報を取得  
     Args: user(str): userID  
-    Returns: { date, contest_id, rank, pafs, rating, diff }
+    Returns: { date, contest_id, rank, pafs, rating, diff }[]
     """
 
     if TEST:
@@ -139,12 +185,13 @@ def get_contest_page(user, N=10):
             break
     return ret
 
-def get_submissions_merge_contest_info(user):
+def get_submissions_merge_contest_info(user, histories=None):
     """
     直近のユーザーの提出物とコンテストIDを紐づけて取得  
     { contest_id: submission[] }
     """
-    histories = get_contest_page(user) # 直近のコンテスト履歴を取得
+    if histories is None:
+        histories = get_histories(user) # 直近のコンテスト履歴を取得
     histories.sort(key=lambda x: time2epoch(x["date"])) # 日付順にソート
     contest_datas = get_contests_information() # すべてのコンテスト情報を取得
     submissions = []
@@ -171,7 +218,7 @@ def get_submissions_merge_contest_info(user):
         ret[history["contest_id"]] = submissions_filter
     return ret
 
-def get_similarity_problems(problem_id, N=5, difficulty=None):
+def get_similarity_problems(problem_id, N=3, difficulty=None, least_diff=0):
     """
     problem_idの問題に類似度の高い問題をN返す。
     difficultyを渡すと難易度を考慮して返す。(毎度difficultyを取得すると時間がかかるので引数で渡す。)
@@ -210,7 +257,12 @@ def get_similarity_problems(problem_id, N=5, difficulty=None):
         try :
             problem_diff = difficulty[problem_id]["difficulty"]
             target_diff = difficulty[target_id]["difficulty"]
-            return max(score - (abs(problem_diff - target_diff) / 1000), 0)
+            if problem_diff is None or target_diff is None :
+                return -1000
+            
+            orrection = 200 if least_diff < 0 else 0
+            # print(f"problemID: {problem_id}, targetID: {target_id} diff: {abs(problem_diff - target_diff)} score: {score - (abs(problem_diff - target_diff) / 3000)}")
+            return score - (abs((problem_diff - orrection) - target_diff) / 3000)
         except:
             return score
 
@@ -218,17 +270,12 @@ def get_similarity_problems(problem_id, N=5, difficulty=None):
     scores = sorted(scores, key=lambda x: calc_score(x[0], x[1]), reverse=True)
     return scores[:N]
 
-def get_recomend_problem(user):
+def get_recomend_problem(user, histories=None):
     """
     不正解だった問題を元におすすめの問題のリストを返す  
-    [  
-        [(id, score), (id, score), ...],  
-        [(id, score), (id, score), ...],  
-        ...  
-    ]  
+    return (id, score)[][]
     """
-
-    submissions_list = get_submissions_merge_contest_info(user)
+    submissions_list = get_submissions_merge_contest_info(user, histories=histories)
     problems = set()
     for submissions in submissions_list.values():
         for submission in submissions:
@@ -237,17 +284,41 @@ def get_recomend_problem(user):
                 problems.add(submission["problem_id"])
 
     difficulty = get_difficulties()
-    return [get_similarity_problems(p) for p in problems]
+    if histories is None:
+        least_diff = 0
+    else:
+        least_diff = histories[0]["diff"]
+    return [get_similarity_problems(p, difficulty=difficulty, least_diff=least_diff) for p in problems]
+
+
+def run():
+    windowShow()
+
+    # user = "kiiiiiii"
+    # histories = get_histories(user)
+    # least_diff = histories[0]["diff"]
+
+    # difficulties = get_difficulties()
+
+    # use_gemini("""リンゴの魅力について簡潔に教えてください。""", TEST=True)
 
 
 if __name__ == "__main__":
     if TEST:
         print("テストモードで実行しています。")
 
-    recomends = get_recomend_problem("kiiiiiii")
-    for problems in recomends:
-        for problem in problems:
-            print(problem)
+
+    run()
+
+    # user = "kiiiiiii"
+    # histories = get_histories()
+    # recomend = get_recomend_problem(user, histories=histories)
+    
+    
+    # recomends = get_recomend_problem("kiiiiiii")
+    # for problems in recomends:
+    #     for problem in problems:
+    #         print(problem)
 
     # result = get_submissions_merge_contest_info("kiiiiiii")
     # for id, submissions in result.items():
@@ -256,4 +327,3 @@ if __name__ == "__main__":
     #         sim_problem = get_similarity_problems(submission["problem_id"])[0][0]
     #         print(f"    {submission['epoch_second']}: {submission['problem_id']} - {submission['result']} ({submission['language']}) simproblem: {sim_problem}")
     # print(get_similarity_problems("abc300_a", difficulty=get_difficulties()))
-    pass
