@@ -168,6 +168,7 @@ def get_histories(user, N=10, TEST=False):
         if (len(tds) < 6):
             continue
         infos = {}
+        will_append = True
         for key, td in zip(USER_HISTORY_KEY, tds): 
             if key == "date":
                 infos[key] =  td.get("data-order")
@@ -180,11 +181,14 @@ def get_histories(user, N=10, TEST=False):
             elif key == "rating" or key == "diff":
                 if td.text.strip() == "-":
                     infos[key] = None
+                    will_append = False
+                    break
                 else:
                     infos[key] = int(td.text.strip())
-        ret.append(infos)
-        if len(ret) >= N:
-            break
+        if will_append:                
+            ret.append(infos)
+            if len(ret) >= N:
+                break
     return ret
 
 def get_submissions_merge_contest_info(user, histories=None):
