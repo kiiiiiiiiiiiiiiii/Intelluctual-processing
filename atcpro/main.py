@@ -9,12 +9,11 @@ import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
-from gui import windowShow
 load_dotenv()
 
-TEST = False
+# TEST = False
 
-def get_api(url, params=None):
+def get_api(url, params=None, TEST=False):
     if TEST:
         return None
     try:
@@ -26,23 +25,26 @@ def get_api(url, params=None):
     except requests.exceptions.RequestException as err:
         print(f"Error: {err}")
 
-def use_gemini(text, TEST=False):
+def use_gemini(prompt, TEST=False):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
     headers = {
         "Content-Type": "applicatoin/json"
     }
-    text =  """
+    prompt =  f"""
             マークダウン記法を使わずに、プレーンテキストで回答してください。
             箇条書きは使わず、通常の文章で記述してください。
             コードブロックは含めないでください。
             太字や斜体などの装飾は不要です。
-            """ + text
+            空白の行は作らないようにしてください。
+            -----
+            {prompt}
+            """
 
     data = {
         "contents": [
             {
                 "parts": [
-                    { "text": text }
+                    { "text": prompt }
                 ]
             }
         ]
@@ -69,7 +71,7 @@ def use_gemini(text, TEST=False):
     except json.JSONDecodeError:
         print(f"JSONでコードエラー: {response.text}")
 
-def get_html(url):
+def get_html(url, TEST=False):
     if TEST:
         return None
     try:
@@ -95,7 +97,7 @@ def set_json(path, data):
     with open(f"{module_path}/{path}", "w",encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-def get_contests_information():
+def get_contests_information(TEST=False):
     if TEST:
         return get_json("./data/contests.json")
     return get_api("https://kenkoooo.com/atcoder/resources/contests.json")
@@ -103,7 +105,7 @@ def get_contests_information():
 def get_problems_information():
     return get_api("https://kenkoooo.com/atcoder/resources/problems.json")
 
-def get_detailed_problems_information():
+def get_detailed_problems_information(TEST=False):
     if TEST: 
         return get_json("./data/merged-problems.json")
     return get_api("https://kenkoooo.com/atcoder/resources/merged-problems.json")
@@ -123,7 +125,7 @@ def get_accepted_count_for_each_language(user):
     params = {"user": user}
     return get_api("https://kenkoooo.com/atcoder/atcoder-api/v3/user/language_rank", params)
 
-def get_user_submissions(user, from_second):
+def get_user_submissions(user, from_second, TEST=False):
     if TEST:
         return get_json("./data/submissions.json")
     params = {"user": user, "from_second": from_second}
@@ -147,7 +149,7 @@ def get_difficulties():
     return get_api("https://kenkoooo.com/atcoder/resources/problem-models.json")
 
 USER_HISTORY_KEY = ("date", "contest_id", "rank", "pafs", "rating", "diff")
-def get_histories(user, N=10):
+def get_histories(user, N=10, TEST=False):
     """
     直近の10コンテストの情報を取得  
     Args: user(str): userID  
@@ -273,7 +275,7 @@ def get_similarity_problems(problem_id, N=3, difficulty=None, least_diff=0):
 def get_recomend_problem(user, histories=None):
     """
     不正解だった問題を元におすすめの問題のリストを返す  
-    return (id, score)[][]
+    return (id, score)[], difficulty (score降順にソート済み)
     """
     submissions_list = get_submissions_merge_contest_info(user, histories=histories)
     problems = set()
@@ -288,24 +290,58 @@ def get_recomend_problem(user, histories=None):
         least_diff = 0
     else:
         least_diff = histories[0]["diff"]
-    return [get_similarity_problems(p, difficulty=difficulty, least_diff=least_diff) for p in problems]
+    ret = sum([get_similarity_problems(p, difficulty=difficulty, least_diff=least_diff) for p in problems], [])
+    return sorted(ret, key=lambda x: x[1], reverse=True), difficulty
+
+def get_gemini_advice(user: str, ai_type: str, histories=None, recomend_problems=None, TEST=False):
+    if histories is None:
+        histories = get_histories()
+    if recomend_problems is None:
+        recomend_problems, _diff = get_recomend_problem()
+    problems_json = get_json("data/problems_editorial.json")
+
+    recomend_problems_editorials = []
+    for problem in recomend_problems:
+        problem_id = problem[0]
+        if not problem_id in problems_json:
+            continue
+        if problems_json[problem_id] is None:
+            continue
+        recomend_problems_editorials.append(problems_json[problem_id]["text"])
+
+    prompt = f"""
+    ユーザーの競技プログラミングの成績がこちらです。
+    -----
+    {histories}
+    -----
+    {user}さんの{ai_type}になりきって、大げさにアドバイスをください。
+    特に、最新のコンテストに対して、レートが上がった場合は大げさに褒め、下がってしまっていたらとにかく優しく慰めてください。
+    大きく下がっている場合はユーザーの心は深く傷ついています。丁寧な言葉遣いを心掛けてください。
+    なお、すべての成績について詳細にアドバイスをする必要はないです。レートの変動に着目して、ざっくりと総括してください。
+    また、ユーザーが間違えた問題を元に検索をかけたおすすめ問題の解説は以下です。どのような特徴があるか分析して、適切なアドバイスをしてください。(間違えた問題の解説ではないことに注意してください。解説の詳細には触れず、解法等に触れてアドバイスをしてください。)
+    -----
+    {recomend_problems_editorials[:3]}
+    -----
+    """
+
+    return use_gemini(prompt, TEST=TEST)
 
 
 def run():
-    windowShow()
+    # windowShow()
 
-    # user = "kiiiiiii"
-    # histories = get_histories(user)
-    # least_diff = histories[0]["diff"]
+    user = "kiiiiiii"
+    histories = get_histories(user)
+    least_diff = histories[0]["diff"]
 
-    # difficulties = get_difficulties()
+    difficulties = get_difficulties()
 
-    # use_gemini("""リンゴの魅力について簡潔に教えてください。""", TEST=True)
+    use_gemini("""リンゴの魅力について簡潔に教えてください。""", TEST=True)
 
 
 if __name__ == "__main__":
-    if TEST:
-        print("テストモードで実行しています。")
+    # if TEST:
+    #     print("テストモードで実行しています。")
 
 
     run()
