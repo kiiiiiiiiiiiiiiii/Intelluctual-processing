@@ -1,8 +1,8 @@
 import random
 import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLineEdit, QTextEdit, QPushButton, QRadioButton, QLabel, QFrame
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLineEdit, QTextEdit, QPushButton, QRadioButton, QLabel, QFrame, QProgressDialog, QErrorMessage, QMessageBox
 from PyQt6.QtGui import QDesktopServices, QCursor
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QObject, QRunnable, QThreadPool
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -38,15 +38,48 @@ COLOR_BORDERS = (
 )
 
 def get_diff_color(diff) :
+    """
+    diffに対応した色コードを返す
+    """
     diff = max(diff, 0)
     for border in COLOR_BORDERS:
         if diff < border[1]:
             return USER_COLORS[border[0]]
     return USER_COLORS["red"]
 
+class WorkerSignals(QObject):
+    """
+    マルチスレッドのシグナル
+    """
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+class Worker(QRunnable):
+    """
+    マルチスレッド実行用
+    """
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self.fn = fn
+        self.args = args 
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+    
+    def run(self):
+        try:
+            result = self.fn(*self.args, **self.kwargs)
+            self.signals.finished.emit(result)
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
 class ATCProWindow(QWidget):
+    """
+    GUI
+    """
     def __init__(self):
         super().__init__()
+        self.threadpool = QThreadPool()
         self.initGUI()
 
     def initGUI(self):
@@ -140,10 +173,6 @@ class ATCProWindow(QWidget):
         links_content = QWidget()
         self.links_scroll_layout = QHBoxLayout(links_content)
         self.update_recomend_card()
-        # for data in link_data:
-        #     card = LinkCard(data["title"], data["description"], data["url"])
-        #     card.clicked.connect(self.open_url_in_browser)
-        #     self.links_scroll_layout.addWidget(card, 1)
         links_scroll_area.setWidget(links_content)
 
         row3.addWidget(recomend_title)
@@ -158,22 +187,65 @@ class ATCProWindow(QWidget):
         self.setLayout(layout)
 
         
-
-    def on_search_click(self):
+    def fetch_atc_data(self):
         """
-        検索ボタンを押したときの処理
+        検索ボタンを押したときの処理(時間のかかる処理をここで実行)
         """
         user = self.user_input.text()
+        ai_type = self.get_ai_type()
         histories = get_histories(user)
-        self.update_history_graph(histories=histories)
         recomends, difficulty = get_recomend_problem(user, histories=histories)
-        ai_text = get_gemini_advice(user, self.get_ai_type(), histories=histories, recomend_problems=recomends, TEST=True)
+        ai_text = get_gemini_advice(user, ai_type, histories=histories, recomend_problems=recomends, TEST=True)
         if ai_text is None:
             self.ai_text.setText("取得できませんでした！ごめんなさい！")
         else:
             self.ai_text.setText(ai_text)
             print(ai_text)
-        self.update_recomend_card(recomends=recomends, difficulty=difficulty)
+
+        return {
+            "histories": histories[::-1],
+            "recomends": recomends,
+            "difficulty": difficulty,
+            "ai_text": ai_text
+        }
+
+    def on_search_click(self):
+        """
+        検索ボタンを押したときの処理
+        """
+        self.progress_dialog = QProgressDialog("データを取得中...", "キャンセル", 0, 0, self)
+        self.progress_dialog.setModal(True)
+        self.progress_dialog.setWindowTitle("検索中")
+        self.progress_dialog.show()
+
+        worker = Worker(self.fetch_atc_data)
+        worker.signals.finished.connect(self.on_search_finished)
+        worker.signals.error.connect(self.on_search_error)
+
+        self.threadpool.start(worker)
+
+    def on_search_finished(self, result):
+        """
+        ワーカースレッドの実行が終わった時の処理
+        """
+        self.progress_dialog.close()
+        self.update_history_graph(histories=result["histories"])
+        self.ai_text.setText(result["ai_text"])
+        self.update_recomend_card(recomends=result["recomends"], difficulty=result["difficulty"])
+
+    def on_search_error(self, error_message):
+        """
+        ワーカースレッドでエラーが発生したときの処理
+        """
+        self.progress_dialog.close()
+        print(f"error: {error_message}")
+
+        QMessageBox.critical(
+            self,
+            "エラー", # ウィンドウタイトル
+            f"エラーが発生しました。\n Error: {error_message}" # メッセージ本文
+        )
+
 
     def on_change_ai_type(self):
         """
@@ -191,6 +263,9 @@ class ATCProWindow(QWidget):
         return ""
     
     def update_history_graph(self, histories=None):
+        """
+        グラフを書き換える
+        """
         self.history_ax.clear()
 
         self.history_ax.axhspan(0, 400, facecolor=USER_COLORS["gray"], alpha=0.3)
@@ -211,6 +286,7 @@ class ATCProWindow(QWidget):
             x = [p for p in range(10)]
             y = [(p + 1) * 50 + random.randint(-50, 50) for p in range(10)]
         if y:
+            # 数値じゃないものをスキップ
             remove_set = {i for i, v in enumerate(y) if type(v) != int}
             y = [v for i, v in enumerate(y) if not i in remove_set]
             x = [v for i, v in enumerate(x) if not i in remove_set]
@@ -232,6 +308,9 @@ class ATCProWindow(QWidget):
         self.history_graph.draw()
     
     def update_recomend_card(self, recomends=None, difficulty=None):
+        """
+        おすすめ問題を書き換える
+        """
         if recomends is None:
             card = LinkCard(title="Sample", name="sample", diff=0, url="")
             self.links_scroll_layout.addWidget(card)
@@ -272,6 +351,9 @@ class ATCProWindow(QWidget):
 
 
 class LinkCard(QFrame):
+    """
+    おすすめ問題カード
+    """
     clicked = pyqtSignal(str)
 
     def __init__(self, title, name, diff, url ,parent=None):
