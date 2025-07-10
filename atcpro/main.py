@@ -179,7 +179,7 @@ def get_histories(user, N=10, TEST=False):
             elif key == "pafs":
                 infos[key] = td.text.strip()
             elif key == "rating" or key == "diff":
-                if td.text.strip() == "-":
+                if key == "rating" and td.text.strip() == "-":
                     infos[key] = None
                     will_append = False
                     break
